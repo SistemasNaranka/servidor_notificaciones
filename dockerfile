@@ -1,14 +1,14 @@
-# Usa Python 3.12 oficial
+# Uso Python 3.12 
 FROM python:3.12-slim
 
 # Establece directorio de trabajo
 WORKDIR /app
 
-# Copia e instala dependencias
+# Copiar e instalar dependencias
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia el script
+# Copiar el script
 COPY notification_server.py .
 
 # Expone el puerto 5050
