@@ -17,5 +17,5 @@ EXPOSE 5050
 # Lanza el servidor
 CMD ["uvicorn", "notification_server:app", "--host", "0.0.0.0", "--port", "5050"]
 
-# docker run -d -p 5050:5050
+# docker build -t notification-server .
 # docker run -d -p 5050:5050 --name notify notification-server
