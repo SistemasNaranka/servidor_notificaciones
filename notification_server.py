@@ -25,7 +25,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str = Query(...), no
         while True:
             await websocket.receive_text()  # mantener viva la conexión
     except WebSocketDisconnect:
-        logger.info(f"[-] Cliente desconectado: {user_id}")
+        logger.info(f"[-] Cliente desconectado: {user_id} - {nombre}")
         connected_clients.pop(user_id, None)
 
 
