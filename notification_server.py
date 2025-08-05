@@ -35,7 +35,11 @@ def get_connected_users():
         f"{user_id}: {info.get('nombre', '')}" 
         for user_id, info in connected_clients.items()
     ]
-    return JSONResponse(content={"online_users": online})
+    total = len(connected_clients)
+    return JSONResponse(content={
+        "total_conectados": total,
+        "online_users": online
+    })
 
 
 @app.post("/notify")
