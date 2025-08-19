@@ -16,30 +16,36 @@ connected_clients: Dict[str, List[Dict]] = {}
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, user_id: str = Query(...), nombre: str = Query(default="")):
     await websocket.accept()
-    if user_id not in connected_clients:
-        connected_clients[user_id] = []
-    # Agrega la nueva conexión a la lista
-    connected_clients[user_id].append({
+
+    # Si ya existe un cliente con ese user_id, cierra su conexión anterior
+    if user_id in connected_clients:
+        for client in connected_clients[user_id]:
+            try:
+                await client["ws"].close()
+            except:
+                pass
+        connected_clients[user_id].clear()
+
+    # Guarda la nueva conexión (solo una por user_id)
+    connected_clients[user_id] = [{
         "ws": websocket,
         "nombre": nombre
-    })
+    }]
+
     logger.info(f"[✓] Cliente conectado: {user_id} - {nombre}")
 
     try:
         while True:
-            await websocket.receive_text()  # mantener viva la conexión
+            await websocket.receive_text()
     except WebSocketDisconnect:
         logger.info(f"[-] Cliente desconectado: {user_id} - {nombre}")
-        # Eliminar la conexión de la lista
-        connected_clients[user_id] = [client for client in connected_clients[user_id] if client["ws"] != websocket]
-        # Si la lista está vacía, eliminar el user_id del diccionario
-        if not connected_clients[user_id]:
-            del connected_clients[user_id]
+        connected_clients.pop(user_id, None)
+
 
 @app.get("/online")
 def get_connected_users():
     online = [
-        f"{user_id}: {info.get('nombre', '')}" 
+        f"{user_id}: {info[0].get('nombre', '')}"  # Solo muestra el nombre del primer cliente en la lista
         for user_id, info in connected_clients.items()
     ]
     total = sum(len(info) for info in connected_clients.values())  # Total de conexiones
@@ -47,6 +53,7 @@ def get_connected_users():
         "total_conectados": total,
         "online_users": online
     })
+
 
 @app.post("/notify")
 async def enviar_notificacion(request: Request):
@@ -65,7 +72,7 @@ async def enviar_notificacion(request: Request):
         # Buscar por ID directamente
         if destinatario in connected_clients:
             for client in connected_clients[destinatario]:
-                encontrados.append((destinatario, client))
+                encontrados.append((destinatario, client))  # <-- FIX
 
         # Buscar por nombre
         for uid, info in connected_clients.items():
