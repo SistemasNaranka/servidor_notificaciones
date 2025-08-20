@@ -16,44 +16,37 @@ connected_clients: Dict[str, List[Dict]] = {}
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, user_id: str = Query(...), nombre: str = Query(default="")):
     await websocket.accept()
-
-    # Si ya existe un cliente con ese user_id, cierra su conexión anterior
-    if user_id in connected_clients:
-        for client in connected_clients[user_id]:
-            try:
-                await client["ws"].close()
-            except:
-                pass
-        connected_clients[user_id].clear()
-
-    # Guarda la nueva conexión (solo una por user_id)
-    connected_clients[user_id] = [{
+    if user_id not in connected_clients:
+        connected_clients[user_id] = []
+    # Agrega la nueva conexión a la lista
+    connected_clients[user_id].append({
         "ws": websocket,
         "nombre": nombre
-    }]
-
+    })
     logger.info(f"[✓] Cliente conectado: {user_id} - {nombre}")
 
     try:
         while True:
-            await websocket.receive_text()
+            await websocket.receive_text()  # mantener viva la conexión
     except WebSocketDisconnect:
         logger.info(f"[-] Cliente desconectado: {user_id} - {nombre}")
-        connected_clients.pop(user_id, None)
-
+        # Eliminar la conexión de la lista
+        connected_clients[user_id] = [client for client in connected_clients[user_id] if client["ws"] != websocket]
+        # Si la lista está vacía, eliminar el user_id del diccionario
+        if not connected_clients[user_id]:
+            del connected_clients[user_id]
 
 @app.get("/online")
 def get_connected_users():
-    online = [
-        f"{user_id}: {info[0].get('nombre', '')}"  # Solo muestra el nombre del primer cliente en la lista
-        for user_id, info in connected_clients.items()
-    ]
-    total = sum(len(info) for info in connected_clients.values())  # Total de conexiones
+    online = []
+    for user_id, clients in connected_clients.items():
+        for client in clients:
+            online.append(f"{user_id}: {client.get('nombre', '')}")
+    total = sum(len(info) for info in connected_clients.values())
     return JSONResponse(content={
         "total_conectados": total,
         "online_users": online
     })
-
 
 @app.post("/notify")
 async def enviar_notificacion(request: Request):
@@ -69,14 +62,14 @@ async def enviar_notificacion(request: Request):
     for destinatario in destinatarios:
         encontrados = []
 
-        # Buscar por ID directamente
+        # Buscar por ID
         if destinatario in connected_clients:
             for client in connected_clients[destinatario]:
-                encontrados.append((destinatario, client))  # <-- FIX
+                encontrados.append((destinatario, client))
 
         # Buscar por nombre
-        for uid, info in connected_clients.items():
-            for client in info:
+        for uid, clients in connected_clients.items():
+            for client in clients:
                 if client.get("nombre") == destinatario:
                     encontrados.append((uid, client))
 
@@ -87,7 +80,7 @@ async def enviar_notificacion(request: Request):
                     enviados.append(f"{uid}: {client.get('nombre', '')}")
                 except Exception as e:
                     logger.error(f"Error enviando a {uid}: {e}")
-                    no_conectados.append(destinatario)
+                    no_conectados.append(f"{uid}: {client.get('nombre', '')}")
         else:
             no_conectados.append(destinatario)
 
@@ -96,7 +89,6 @@ async def enviar_notificacion(request: Request):
         "enviados": enviados,
         "no_conectados": no_conectados
     }
-
 
 # @app.post("/notify/email")
 # async def enviar_email(...):
