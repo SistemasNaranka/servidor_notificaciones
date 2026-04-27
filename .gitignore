@@ -1,6 +1,34 @@
+# Entorno de Python
 .venv/
-.env
+venv/
+env/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Secretos y Configuración Local
+.env
+config_local.py
+instance/
+.pytest_cache/
+
+# Logs y Bases de Datos
 *.log
-node_modules/
+logs/
+*.sqlite3
+*.db
+
+# Docker
+.docker_temp/
+
+# IDEs y Editores
+.vscode/
+.idea/
+.project
+.pydevproject
+.settings/
+
+# Archivos de sistema
+Thumbs.db
+.DS_Store

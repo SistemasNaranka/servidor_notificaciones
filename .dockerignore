@@ -1,4 +1,20 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
 __pycache__/
 *.pyc
-.venv/
+*.pyo
+*.pyd
+
+# Archivos de entorno y secretos
 .env
+.git
+.gitignore
+
+# Archivos locales de desarrollo
+*.log
+logs/
+dist/
+build/
+*.spec

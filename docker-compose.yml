@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  notificador-api:
+    build: .
+    container_name: notificador_server
+    restart: always
+    ports:
+      - "5050:5050"
+    environment:
+      # Coolify inyectará estas variables desde su panel de UI
+      - DB_URL=${DB_URL}
+      - CLIENT_TOKEN=${CLIENT_TOKEN}
+      - ORIGINS=${ORIGINS:-*}
+    # Si quieres persistir logs fuera del contenedor
+    volumes:
+      - ./logs:/app/logs
