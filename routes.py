@@ -156,6 +156,30 @@ async def health_check():
         "timestamp": now_colombia().isoformat()
     }
 
+@router.get("/clients")
+async def get_clients(token: Optional[str] = Query(None), authorization: Optional[str] = Header(None)):
+    # Permitir token por Header o por URL (?token=...)
+    resolved_token = ""
+    if authorization and authorization.startswith("Bearer "):
+        resolved_token = authorization[7:]
+    elif token:
+        resolved_token = token
+
+    if not resolved_token:
+        raise HTTPException(status_code=401, detail="Token requerido (via Header o ?token=)")
+
+    user = await validate_token(resolved_token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    """Devuelve la lista de equipos conectados (solo para usuarios autenticados)."""
+    async with clients_lock:
+        return {
+            "total": len(connected_clients),
+            "clients": list(connected_clients.keys())
+        }
+
+
 @router.post("/notify")
 async def enviar_notificacion(request: Request, authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):

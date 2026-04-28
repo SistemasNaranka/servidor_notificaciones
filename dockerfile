@@ -7,10 +7,6 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Instalación de dependencias del sistema mínimas
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc python3-dev && \
-    rm -rf /var/lib/apt/lists/*
 
 # Instalación de dependencias de la aplicación
 COPY requirements.txt .

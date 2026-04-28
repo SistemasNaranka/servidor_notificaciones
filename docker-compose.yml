@@ -7,11 +7,8 @@ services:
     restart: always
     ports:
       - "5050:5050"
-    environment:
-      # Coolify inyectará estas variables desde su panel de UI
-      - DB_URL=${DB_URL}
-      - CLIENT_TOKEN=${CLIENT_TOKEN}
-      - ORIGINS=${ORIGINS:-*}
+    env_file:
+      - .env
     # Si quieres persistir logs fuera del contenedor
     volumes:
       - ./logs:/app/logs
