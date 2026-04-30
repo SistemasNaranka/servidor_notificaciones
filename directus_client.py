@@ -5,30 +5,35 @@ Módulo de autenticación y gestión de clientes con Directus (Async).
 import logging
 import httpx
 import hashlib
+import asyncio
 from typing import Optional, Any
 from config import DIRECTUS_URL, DIRECTUS_TOKEN, DIRECTUS_VERIFY_SSL
 from utils import now_colombia
 
 logger = logging.getLogger(__name__)
 
-# Cliente async persistente para reutilizar conexiones
+# Cliente async persistente con bloqueo para thread-safety
 _async_client: Optional[httpx.AsyncClient] = None
+_client_lock = asyncio.Lock()
 
-def get_async_client() -> httpx.AsyncClient:
-    """Obtiene o crea el cliente HTTP asíncrono."""
+async def get_async_client() -> httpx.AsyncClient:
+    """Obtiene o crea el cliente HTTP asíncrono de forma segura."""
     global _async_client
     if _async_client is None:
-        _async_client = httpx.AsyncClient(
-            base_url=DIRECTUS_URL,
-            headers={"Authorization": f"Bearer {DIRECTUS_TOKEN}"},
-            verify=DIRECTUS_VERIFY_SSL,
-            timeout=10.0
-        )
+        async with _client_lock:
+            if _async_client is None:
+                _async_client = httpx.AsyncClient(
+                    base_url=DIRECTUS_URL,
+                    headers={"Authorization": f"Bearer {DIRECTUS_TOKEN}"},
+                    verify=DIRECTUS_VERIFY_SSL,
+                    timeout=10.0
+                )
     return _async_client
+
 
 async def _directus_request(endpoint: str, params: dict = None) -> list:
     """Realiza una petición GET asíncrona a Directus."""
-    client = get_async_client()
+    client = await get_async_client()
     try:
         response = await client.get(endpoint, params=params)
         response.raise_for_status()
@@ -70,7 +75,7 @@ async def find_user_by_token(token: str) -> Optional[dict]:
 async def auto_register_client(user_data: dict, token: str = None, version: str = "1.0.0") -> Optional[dict]:
     """Auto-registro en core_notifier_clients (Async)."""
     try:
-        client = get_async_client()
+        client = await get_async_client()
         user_id = user_data.get("id")
         email = user_data.get("email")
         
@@ -149,7 +154,7 @@ async def authenticate_websocket_token(token: str, version: str = "1.0.0") -> Op
         
         if updates:
             try:
-                await get_async_client().patch(f"/items/core_notifier_clients/{client_record['id']}", json=updates)
+                await (await get_async_client()).patch(f"/items/core_notifier_clients/{client_record['id']}", json=updates)
                 client_record.update(updates)
             except Exception as e:
                 logger.error(f"Error sincronizando cliente: {e}")
@@ -170,7 +175,7 @@ async def get_client_by_code(code: str) -> Optional[dict]:
 async def update_client_last_ping(client_id: str) -> bool:
     """Actualiza last_ping del cliente (Async)."""
     try:
-        await get_async_client().patch(f"/items/core_notifier_clients/{client_id}", json={
+        await (await get_async_client()).patch(f"/items/core_notifier_clients/{client_id}", json={
             "last_ping": now_colombia().isoformat()
         })
         return True
@@ -181,7 +186,7 @@ async def update_client_last_ping(client_id: str) -> bool:
 async def check_directus_connection() -> bool:
     """Verifica conexión con Directus."""
     try:
-        res = await get_async_client().get("/items/core_notifier_clients", params={"limit": 1})
+        res = await (await get_async_client()).get("/items/core_notifier_clients", params={"limit": 1})
         return res.status_code == 200
     except Exception:
         return False

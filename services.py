@@ -20,16 +20,16 @@ async def resolve_destinations(destinatarios: list, excluir: list = None) -> tup
     visited_groups = set()
 
     async def _get_excluir_ids():
-        e_ids = set()
-        for ex in excluir_list:
-            try:
-                res = await _directus_request("/items/core_notifier_clients", {
-                    "filter[code][_eq]": ex, 
-                    "fields": "id"
-                })
-                for r in res: e_ids.add(str(r["id"]))
-            except: pass
-        return e_ids
+        if not excluir_list: return set()
+        try:
+            res = await _directus_request("/items/core_notifier_clients", {
+                "filter": json.dumps({"code": {"_in": excluir_list}}),
+                "fields": "id"
+            })
+            return {str(r["id"]) for r in res}
+        except Exception as e:
+            logger.warning(f"Error al obtener IDs para excluir: {e}")
+            return set()
 
     async def _resolve_group(group_id: str, depth: int = 0):
         if group_id in visited_groups or depth > 5: return
@@ -37,87 +37,111 @@ async def resolve_destinations(destinatarios: list, excluir: list = None) -> tup
         
         try:
             members = await _directus_request("/items/core_notification_group_members", {
-                "filter[group_id][_eq]": group_id,
-                "fields": "notifier_client_id.*,store_id.*,subgroup_id.*"
+                "filter": json.dumps({"group_id": {"_eq": group_id}}),
+                "fields": "notifier_client_id.id,notifier_client_id.code,store_id,subgroup_id"
             })
+            
+            store_ids = []
+            subgroup_ids = []
             
             for m in members:
                 # Cliente directo
                 rc = m.get("notifier_client_id")
                 if rc:
-                    its = rc if isinstance(rc, list) else [rc]
-                    for it in its:
-                        if isinstance(it, dict):
-                            cid = str(it.get("id"))
-                            code = it.get("code")
-                            if cid:
-                                client_ids.add(cid)
-                                if code: id_to_code[cid] = str(code)
+                    cid = str(rc.get("id"))
+                    code = rc.get("code")
+                    client_ids.add(cid)
+                    if code: id_to_code[cid] = str(code)
                 
-                # Por Tienda
+                # Colectar Tiendas y Subgrupos para batch
                 rs = m.get("store_id")
-                if rs:
-                    s_id = str(rs.get("id") if isinstance(rs, dict) else rs)
-                    clients = await _directus_request("/items/core_notifier_clients", {
-                        "filter[store_id][_eq]": s_id, 
-                        "fields": "id,code"
-                    })
-                    for c in clients:
-                        cid = str(c["id"])
-                        client_ids.add(cid)
-                        if c.get("code"): id_to_code[cid] = str(c["code"])
+                if rs: store_ids.append(str(rs.get("id") if isinstance(rs, dict) else rs))
                 
-                # Subgrupos (recursión protegida)
                 rg = m.get("subgroup_id")
-                if rg:
-                    sg_id = str(rg.get("id") if isinstance(rg, dict) else rg)
-                    await _resolve_group(sg_id, depth + 1)
-                    
-        except Exception as e:
-            logger.error(f"Error resolviendo grupo {group_id}: {e}")
-
-    # Procesar destinatarios
-    for d in destinos_raw:
-        if d.lower() == "todos":
-            res = await _directus_request("/items/core_notifier_clients", {"fields": "id,code", "limit": "-1"})
-            for c in res:
-                cid = str(c["id"])
-                client_ids.add(cid)
-                if c.get("code"): id_to_code[cid] = str(c["code"])
-        
-        elif d.startswith("grupo:"):
-            gname = d.replace("grupo:", "").strip()
-            groups = await _directus_request("/items/core_notification_groups", {"filter[name][_eq]": gname, "fields": "id"})
-            for g in groups: await _resolve_group(str(g["id"]))
+                if rg: subgroup_ids.append(str(rg.get("id") if isinstance(rg, dict) else rg))
             
-        elif d.startswith("area:"):
-            area = d.replace("area:", "").strip()
-            users = await _directus_request("/users", {"filter[area][_eq]": area, "fields": "id"})
-            u_ids = [str(u["id"]) for u in users]
-            if u_ids:
+            # Resolver Tiendas en batch
+            if store_ids:
                 clients = await _directus_request("/items/core_notifier_clients", {
-                    "filter[user_id][_in]": ",".join(u_ids), 
+                    "filter": json.dumps({"store_id": {"_in": store_ids}}),
                     "fields": "id,code"
                 })
                 for c in clients:
                     cid = str(c["id"])
                     client_ids.add(cid)
                     if c.get("code"): id_to_code[cid] = str(c["code"])
-        
-        else: # Código directo
-            res = await _directus_request("/items/core_notifier_clients", {"filter[code][_eq]": d, "fields": "id,code,name"})
-            if res:
-                for c in res:
-                    cid = str(c["id"])
-                    client_ids.add(cid)
-                    id_to_code[cid] = f"{c.get('code', d)} ({c.get('name', '')})".strip(" ()")
-            else:
-                client_ids.add(d)
+            
+            # Resolver Subgrupos (recursión protegida)
+            if subgroup_ids:
+                tasks = [_resolve_group(sg_id, depth + 1) for sg_id in subgroup_ids]
+                await asyncio.gather(*tasks)
+                    
+        except Exception as e:
+            logger.error(f"Error resolviendo grupo {group_id}: {e}")
+
+    # Separar destinatarios por tipo para procesamiento en lote
+    codigos_directos = []
+    grupos_nombres = []
+    areas_nombres = []
+
+    for d in destinos_raw:
+        d_lower = d.lower()
+        if d_lower == "todos":
+            res = await _directus_request("/items/core_notifier_clients", {"fields": "id,code", "limit": "-1"})
+            for c in res:
+                cid = str(c["id"])
+                client_ids.add(cid)
+                if c.get("code"): id_to_code[cid] = str(c["code"])
+        elif d.startswith("grupo:"):
+            grupos_nombres.append(d.replace("grupo:", "").strip())
+        elif d.startswith("area:"):
+            areas_nombres.append(d.replace("area:", "").strip())
+        else:
+            codigos_directos.append(d)
+
+    # 1. Resolver Códigos Directos en batch
+    if codigos_directos:
+        res = await _directus_request("/items/core_notifier_clients", {
+            "filter": json.dumps({"code": {"_in": codigos_directos}}),
+            "fields": "id,code,name"
+        })
+        for c in res:
+            cid = str(c["id"])
+            client_ids.add(cid)
+            name_part = f" ({c.get('name', '')})" if c.get('name') else ""
+            id_to_code[cid] = f"{c.get('code', '???')}{name_part}"
+
+    # 2. Resolver Áreas en batch
+    if areas_nombres:
+        users = await _directus_request("/users", {
+            "filter": json.dumps({"area": {"_in": areas_nombres}}),
+            "fields": "id"
+        })
+        u_ids = [str(u["id"]) for u in users]
+        if u_ids:
+            clients = await _directus_request("/items/core_notifier_clients", {
+                "filter": json.dumps({"user_id": {"_in": u_ids}}),
+                "fields": "id,code"
+            })
+            for c in clients:
+                cid = str(c["id"])
+                client_ids.add(cid)
+                if c.get("code"): id_to_code[cid] = str(c["code"])
+
+    # 3. Resolver Grupos
+    if grupos_nombres:
+        groups = await _directus_request("/items/core_notification_groups", {
+            "filter": json.dumps({"name": {"_in": grupos_nombres}}),
+            "fields": "id"
+        })
+        tasks = [_resolve_group(str(g["id"])) for g in groups]
+        await asyncio.gather(*tasks)
 
     exclude_ids = await _get_excluir_ids()
     final_ids = [tid for tid in client_ids if tid not in exclude_ids]
     
     return final_ids, destinos_raw, id_to_code
+
 
 async def deliver_pending_notifications(client_code: str, client_id: str, websocket) -> int:
     """Entrega notificaciones pendientes (Async & Batch)."""
@@ -127,6 +151,7 @@ async def deliver_pending_notifications(client_code: str, client_id: str, websoc
         filter_obj = {
             "client_id": {"_eq": client_id},
             "is_delivered": {"_eq": False},
+            "scheduled_date": {"_lte": now.isoformat()},
             "_or": [
                 {"expiration_date": {"_gt": now.isoformat()}},
                 {"expiration_date": {"_null": True}}
@@ -156,8 +181,8 @@ async def deliver_pending_notifications(client_code: str, client_id: str, websoc
             "duracion_seg": 10
         })
 
-        delivered = 0
-        client = get_async_client()
+        delivered_ids = []
+        client = await get_async_client()
         
         for p in pending:
             n_data = notif_map.get(str(p["notification_id"]))
@@ -169,15 +194,29 @@ async def deliver_pending_notifications(client_code: str, client_id: str, websoc
                     "mensaje": n_data.get("message", ""),
                     "tipo": n_data.get("notification_type", "info"),
                     "duracion_seg": n_data.get("duration_seconds", 15),
-                    "persistente": n_data.get("is_persistent", False)
+                    "persistente": n_data.get("is_persistent", False),
+                    "mostrar_boton_cerrar": n_data.get("show_close_button", True),
+                    "pausar_al_hover": n_data.get("pause_on_hover", True),
+                    "ruta_accion": n_data.get("action_route")
                 })
-                
-                await client.patch(f"/items/core_notifications_pending/{p['id']}", json={"is_delivered": True})
-                delivered += 1
+                delivered_ids.append(p["id"])
             except Exception as e:
-                logger.error(f"Error entregando pendiente {p['id']}: {e}")
+                logger.error(f"Error enviando notificación {p['id']} vía WS: {e}")
 
-        return delivered
+        # Marcar todas como entregadas en una sola petición (Batch Patch)
+        if delivered_ids:
+            try:
+                await client.patch("/items/core_notifications_pending", json={
+                    "keys": delivered_ids,
+                    "data": {"is_delivered": True}
+                })
+                return len(delivered_ids)
+            except Exception as e:
+                logger.error(f"Error en batch-patch de entregados: {e}")
+                return 0
+        
+        return 0
+
     except Exception as e:
         logger.error(f"Error en deliver_pending_notifications: {e}")
         return 0
@@ -185,11 +224,13 @@ async def deliver_pending_notifications(client_code: str, client_id: str, websoc
 async def save_notification_log(
     titulo: str, mensaje: str, tipo: str, remitente: str, ip_origen: str,
     destinos_raw: list, destinos_reales: list, enviados: int, pendientes: int,
-    duracion_seg: int = 15, persistente: bool = False
+    duracion_seg: int = 15, persistente: bool = False,
+    mostrar_boton_cerrar: bool = True, pausar_al_hover: bool = True,
+    scheduled_date: Optional[str] = None, ruta_accion: Optional[str] = None
 ) -> Optional[str]:
     """Guarda el log de notificación en Directus (Async)."""
     try:
-        res = await get_async_client().post("/items/core_notifications", json={
+        res = await (await get_async_client()).post("/items/core_notifications", json={
             "title": titulo,
             "message": mensaje,
             "notification_type": tipo,
@@ -201,6 +242,10 @@ async def save_notification_log(
             "pending_count": pendientes,
             "is_persistent": persistente,
             "duration_seconds": duracion_seg,
+            "show_close_button": mostrar_boton_cerrar,
+            "pause_on_hover": pausar_al_hover,
+            "scheduled_date": scheduled_date,
+            "action_route": ruta_accion,
             "sent_at": now_colombia().isoformat()
         })
         return res.json().get("data", {}).get("id")
@@ -208,10 +253,12 @@ async def save_notification_log(
         logger.error(f"Error save_notification_log: {e}")
         return None
 
-async def save_pending_notifications(client_ids: List[str], notification_id: str):
+async def save_pending_notifications(client_ids: List[str], notification_id: str, scheduled_date: Optional[str] = None):
     """Guarda múltiples notificaciones pendientes en batch (Async)."""
     if not client_ids: return
     
+    now = now_colombia()
+    final_scheduled_date = scheduled_date or now.isoformat()
     # Obtener TTL de config (cacheable o una sola vez)
     ttl_hours = 24
     try:
@@ -222,18 +269,23 @@ async def save_pending_notifications(client_ids: List[str], notification_id: str
     except: pass
 
     exp = (now_colombia() + timedelta(hours=ttl_hours)).isoformat()
-    client = get_async_client()
+    client = await get_async_client()
     
     # Directus soporta creación masiva pasando una lista al endpoint /items/collection
     items = [{
         "client_id": cid,
         "notification_id": notification_id,
         "expiration_date": exp,
+        "scheduled_date": final_scheduled_date,
         "is_delivered": False
     } for cid in client_ids]
     
     try:
-        await client.post("/items/core_notifications_pending", json=items)
-        logger.info(f"[✓] {len(items)} pendientes guardadas en batch")
+        response = await client.post("/items/core_notifications_pending", json=items)
+        created = response.json().get("data", [])
+        logger.info(f"[✓] {len(created)} pendientes guardadas en batch")
+        return created
     except Exception as e:
         logger.error(f"Error guardando pendientes batch: {e}")
+        return []
+
