@@ -35,8 +35,8 @@ router = APIRouter()
 async def marcar_clientes_inactivos():
     """Tarea periódica para limpiar clientes desconectados en Directus."""
     try:
-        # Obtener clientes que no han reportado ping en los últimos 2 minutos
-        cutoff = (now_colombia() - timedelta(seconds=120)).isoformat()
+        # Obtener clientes que no han reportado ping en los últimos 5 minutos (más paciencia)
+        cutoff = (now_colombia() - timedelta(seconds=300)).isoformat()
         
         async with clients_lock:
             # Solo buscar clientes que Directus cree que están activos
@@ -117,20 +117,24 @@ async def websocket_endpoint(websocket: WebSocket, version: str = "1.0.0", devic
     except Exception as e:
         logger.error(f"Error entregando pendientes a {client_code}: {e}")
 
-    # 5. Loop de vida
+    # 5. Loop de vida (Escucha continua)
     try:
         while True:
-            msg_raw = await asyncio.wait_for(websocket.receive_text(), timeout=60)
+            # Quitamos el wait_for con timeout rígido para dejar que el keep-alive nativo trabaje
+            msg_raw = await websocket.receive_text()
             
-            # Manejo de Pings
+            # Manejo de Pings (Texto) - Soporte para pings manuales si el cliente los envía
             if msg_raw.strip().lower() == "ping":
                 await websocket.send_text("pong")
                 async with clients_lock:
                     for conn in connected_clients.get(client_code, []):
                         if conn["ws"] == websocket:
-                            if (time.time() - conn["last_sync"]) > 300:
+                            # Actualizar last_sync para evitar que el monitor lo marque como inactivo
+                            conn["last_sync"] = time.time()
+                            # Actualizar last_ping en DB cada 5 minutos (para no saturar)
+                            if (time.time() - conn.get("_last_db_ping", 0)) > 300:
                                 await update_client_last_ping(client_id)
-                                conn["last_sync"] = time.time()
+                                conn["_last_db_ping"] = time.time()
                             break
                 continue
 
@@ -140,34 +144,36 @@ async def websocket_endpoint(websocket: WebSocket, version: str = "1.0.0", devic
                 if data.get("type") == "ack":
                     pending_id = data.get("pending_id")
                     if pending_id:
-                        await (await get_async_client()).patch(
+                        client = await get_async_client()
+                        await client.patch(
                             f"/items/core_notifications_pending/{pending_id}", 
                             json={"is_delivered": True}
                         )
                         logger.info(f"[ACK] Notificación {pending_id} confirmada por {client_code}")
-            except json.JSONDecodeError:
-                pass
             except Exception as e:
-                logger.error(f"Error procesando mensaje de cliente {client_code}: {e}")
+                logger.debug(f"Mensaje no JSON de {client_code}: {e}")
 
-    except (WebSocketDisconnect, asyncio.TimeoutError):
-
+    except (WebSocketDisconnect, asyncio.CancelledError):
         logger.info(f"[-] WS Desconectado: {client_code}")
     except Exception as e:
-        logger.warning(f"[!] Error WS {client_code}: {e}")
+        logger.warning(f"[!] Error inesperado en WS {client_code}: {e}")
     finally:
+        # Limpieza robusta de memoria
         async with clients_lock:
             if client_code in connected_clients:
+                # Filtrar solo la conexión que se cerró
                 connected_clients[client_code] = [c for c in connected_clients[client_code] if c["ws"] != websocket]
                 if not connected_clients[client_code]:
                     del connected_clients[client_code]
         
-        await update_client_last_ping(client_id)
+        # Marcar como inactivo en DB solo si no quedan más sesiones abiertas para este código
         if client_code not in connected_clients:
             try:
-                await (await get_async_client()).patch(f"/items/core_notifier_clients/{client_id}", json={"is_active": False})
-            except Exception as e:
-                logger.debug(f"Error marcando inactivo al desconectar: {e}")
+                await update_client_last_ping(client_id)
+                dx = await get_async_client()
+                await dx.patch(f"/items/core_notifier_clients/{client_id}", json={"is_active": False})
+            except:
+                pass
 
 
 @router.get("/health")
