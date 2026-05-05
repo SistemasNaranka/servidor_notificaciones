@@ -14,7 +14,7 @@ class NotificationRequest(BaseModel):
     pausar_al_hover: bool = True
     ruta_accion: Optional[str] = None
     excluir: List[str] = []
-    scheduled_date: Optional[str] = None
+    fecha_programada: Optional[str] = None
 
     @validator("tipo")
     def validate_tipo(cls, v):

@@ -148,12 +148,13 @@ async def deliver_pending_notifications(client_code: str, client_id: str, websoc
     now = now_colombia()
     
     try:
+        now_naive = now.replace(tzinfo=None).isoformat()
         filter_obj = {
             "client_id": {"_eq": client_id},
             "is_delivered": {"_eq": False},
-            "scheduled_date": {"_lte": now.isoformat()},
+            "scheduled_date": {"_lte": now_naive},
             "_or": [
-                {"expiration_date": {"_gt": now.isoformat()}},
+                {"expiration_date": {"_gt": now_naive}},
                 {"expiration_date": {"_null": True}}
             ]
         }
@@ -258,24 +259,32 @@ async def save_pending_notifications(client_ids: List[str], notification_id: str
     if not client_ids: return
     
     now = now_colombia()
-    final_scheduled_date = scheduled_date or now.isoformat()
+    now_naive_str = now.replace(tzinfo=None).isoformat()
+    final_scheduled_date = scheduled_date if scheduled_date else now_naive_str
+    
     # Obtener TTL de config (cacheable o una sola vez)
     ttl_hours = 24
     try:
         config = await _directus_request("/items/core_notification_configs", {
-            "filter[is_active][_eq]": True, "fields": "pending_ttl_hours", "limit": 1
+            "filter": json.dumps({"is_active": {"_eq": True}}),
+            "fields": "pending_tll_hours",
+            "limit": 1
         })
-        if config: ttl_hours = config[0].get("pending_ttl_hours", 24)
+        if config: ttl_hours = config[0].get("pending_tll_hours", 24)
     except: pass
 
-    exp = (now_colombia() + timedelta(hours=ttl_hours)).isoformat()
+    # Solo aplicamos expiración si es una notificación instantánea (sin scheduled_date previo)
+    expiration_date = None
+    if not scheduled_date:
+        expiration_date = (now.replace(tzinfo=None) + timedelta(hours=ttl_hours)).isoformat()
+    
     client = await get_async_client()
     
     # Directus soporta creación masiva pasando una lista al endpoint /items/collection
     items = [{
         "client_id": cid,
         "notification_id": notification_id,
-        "expiration_date": exp,
+        "expiration_date": expiration_date,
         "scheduled_date": final_scheduled_date,
         "is_delivered": False
     } for cid in client_ids]

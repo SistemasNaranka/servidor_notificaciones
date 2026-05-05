@@ -254,9 +254,9 @@ async def get_documentation(authorization: Optional[str] = Header(None)):
                 "description": "Lista de códigos de cliente a excluir del envío.",
                 "default": []
             },
-            "scheduled_date": {
+            "fecha_programada": {
                 "type": "string",
-                "description": "Fecha y hora de envío programado (ISO 8601). Ej: 2026-04-30T15:00:00",
+                "description": "Fecha y hora de envío programado. Ej: '04/05/2026 16:30' o ISO 8601.",
                 "default": "now"
             }
         },
@@ -359,17 +359,44 @@ async def enviar_notificacion(payload: NotificationRequest, request: Request, au
     # 1. Validación de fecha programada
     now = now_colombia()
     is_scheduled = False
-    if payload.scheduled_date:
-        try:
-            from datetime import datetime
-            dt_str = payload.scheduled_date.replace('Z', '+00:00')
-            scheduled_dt = datetime.fromisoformat(dt_str)
-            if scheduled_dt.tzinfo is None:
+    scheduled_dt = None
+    if payload.fecha_programada:
+        # Intentar varios formatos (Humano -> ISO)
+        formatos = [
+            "%d/%m/%Y %H:%M",    # 04/05/2026 16:30
+            "%Y-%m-%d %H:%M:%S", # 2026-05-04 16:30:00
+            "%Y-%m-%d %H:%M",    # 2026-05-04 16:30
+        ]
+        
+        # 1. Intentar formatos manuales
+        for fmt in formatos:
+            try:
+                from datetime import datetime
+                scheduled_dt = datetime.strptime(payload.fecha_programada, fmt)
                 scheduled_dt = scheduled_dt.replace(tzinfo=now.tzinfo)
+                break
+            except:
+                continue
+        
+        # 2. Si fallan, intentar ISO nativo
+        if not scheduled_dt:
+            try:
+                from datetime import datetime
+                dt_str = payload.fecha_programada.replace('Z', '+00:00')
+                scheduled_dt = datetime.fromisoformat(dt_str)
+                if scheduled_dt.tzinfo is None:
+                    scheduled_dt = scheduled_dt.replace(tzinfo=now.tzinfo)
+            except:
+                pass
+        
+        if scheduled_dt:
             if scheduled_dt > now:
                 is_scheduled = True
-        except Exception:
-            raise HTTPException(status_code=400, detail="Formato de scheduled_date inválido")
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail="Formato de fecha_programada inválido. Use 'DD/MM/YYYY HH:MM' o ISO 8601."
+            )
 
     # 2. Resolución de destinos
     target_ids, raw_dest, id_map = await resolve_destinations(payload.destinatarios, payload.excluir)
@@ -385,25 +412,24 @@ async def enviar_notificacion(payload: NotificationRequest, request: Request, au
         ip_origen=request.client.host if request.client else "unknown",
         destinos_raw=raw_dest,
         destinos_reales=target_ids,
-        enviados=0, # Se actualizará si es necesario, o se deja como referencia
+        enviados=0, 
         pendientes=len(target_ids),
         duracion_seg=payload.duracion_seg,
         persistente=payload.persistente,
         mostrar_boton_cerrar=payload.mostrar_boton_cerrar,
         pausar_al_hover=payload.pausar_al_hover,
-        scheduled_date=payload.scheduled_date if is_scheduled else None,
+        scheduled_date=scheduled_dt.replace(tzinfo=None).isoformat() if is_scheduled else None,
         ruta_accion=payload.ruta_accion
     )
 
     if not notif_id:
         raise HTTPException(status_code=500, detail="Error al guardar notificación")
 
-    # 4. Crear registros pendientes en DB (Obtenemos los IDs para el ACK)
-    # Modificamos save_pending_notifications para que devuelva los IDs creados
+    # 4. Crear registros pendientes en DB
     created_pendings = await save_pending_notifications(
         target_ids, 
         notif_id, 
-        scheduled_date=payload.scheduled_date if is_scheduled else None
+        scheduled_date=scheduled_dt.replace(tzinfo=None).isoformat() if is_scheduled else None
     )
     
     # Mapear client_id -> pending_id
@@ -433,6 +459,9 @@ async def enviar_notificacion(payload: NotificationRequest, request: Request, au
                                 "pausar_al_hover": payload.pausar_al_hover,
                                 "ruta_accion": payload.ruta_accion
                             })
+                            # Marcar como entregado en DB inmediatamente
+                            client_dx = await get_async_client()
+                            await client_dx.patch(f"/items/core_notifications_pending/{pending_map[cid]}", json={"is_delivered": True})
                             enviados_count += 1
                             online_ids.add(cid)
                             enviados.append(id_map.get(cid, code))
@@ -467,11 +496,16 @@ async def procesar_notificaciones_pendientes_online():
     """Busca notificaciones cuya fecha llegó y el cliente está conectado."""
     try:
         now = now_colombia()
-        # 1. Obtener registros pendientes que ya deben liberarse
+        now_naive = now.replace(tzinfo=None).isoformat()
+        # 1. Obtener registros pendientes que ya deben liberarse y no han expirado
         pending = await _directus_request("/items/core_notifications_pending", {
             "filter": json.dumps({
                 "is_delivered": {"_eq": False},
-                "scheduled_date": {"_lte": now.isoformat()}
+                "scheduled_date": {"_lte": now_naive},
+                "_or": [
+                    {"expiration_date": {"_gt": now_naive}},
+                    {"expiration_date": {"_null": True}}
+                ]
             }),
             "fields": "id,client_id,notification_id"
         })
