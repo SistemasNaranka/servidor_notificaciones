@@ -56,7 +56,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     # Permite orígenes que coincidan con la red 192.168.19.x
-    allow_origin_regex=r"http://192\.168\.19\..*",
+    allow_origin_regex=r"http://192\.168\..*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
