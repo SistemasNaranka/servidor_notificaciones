@@ -48,14 +48,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Servidor de Notificaciones",
     description="Backend asíncrono para gestión de notificaciones en tiempo real",
-    version="2.0.0",
+    version="2.0.2",
     lifespan=lifespan
 )
 
 # Configuración de CORS segura para la red LAN
 app.add_middleware(
     CORSMiddleware,
-    # Permite orígenes que coincidan con la red 192.168.19.x
+
     allow_origin_regex=r"http://192\.168\..*",
     allow_credentials=True,
     allow_methods=["*"],

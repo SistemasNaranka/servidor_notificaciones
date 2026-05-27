@@ -181,6 +181,7 @@ async def health_check():
     directus_ok = await check_directus_connection()
     return {
         "status": "ok" if directus_ok else "degraded",
+        "version": "2.0.2",
         "clients_connected": sum(len(v) for v in connected_clients.values()),
         "timestamp": now_colombia().isoformat()
     }
