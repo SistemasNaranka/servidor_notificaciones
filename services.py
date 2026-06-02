@@ -38,27 +38,36 @@ async def resolve_destinations(destinatarios: list, excluir: list = None) -> tup
         try:
             members = await _directus_request("/items/core_notification_group_members", {
                 "filter": json.dumps({"group_id": {"_eq": group_id}}),
-                "fields": "notifier_client_id.id,notifier_client_id.code,store_id,subgroup_id"
+                "fields": "notifier_client_id.core_notifier_clients_id.id,notifier_client_id.core_notifier_clients_id.code,store_id,subgroup_id.core_notification_groups_id"
             })
             
             store_ids = []
             subgroup_ids = []
             
             for m in members:
-                # Cliente directo
-                rc = m.get("notifier_client_id")
-                if rc:
-                    cid = str(rc.get("id"))
-                    code = rc.get("code")
-                    client_ids.add(cid)
-                    if code: id_to_code[cid] = str(code)
+                # Cliente directo (M2M relation)
+                rc_list = m.get("notifier_client_id")
+                if rc_list and isinstance(rc_list, list):
+                    for rc_item in rc_list:
+                        client_info = rc_item.get("core_notifier_clients_id")
+                        if client_info:
+                            cid = str(client_info.get("id"))
+                            code = client_info.get("code")
+                            client_ids.add(cid)
+                            if code: id_to_code[cid] = str(code)
                 
                 # Colectar Tiendas y Subgrupos para batch
                 rs = m.get("store_id")
                 if rs: store_ids.append(str(rs.get("id") if isinstance(rs, dict) else rs))
                 
-                rg = m.get("subgroup_id")
-                if rg: subgroup_ids.append(str(rg.get("id") if isinstance(rg, dict) else rg))
+                # Subgrupos (M2M relation)
+                rg_list = m.get("subgroup_id")
+                if rg_list and isinstance(rg_list, list):
+                    for rg_item in rg_list:
+                        sg_info = rg_item.get("core_notification_groups_id")
+                        if sg_info:
+                            sg_id = str(sg_info.get("id") if isinstance(sg_info, dict) else sg_info)
+                            subgroup_ids.append(sg_id)
             
             # Resolver Tiendas en batch
             if store_ids:
