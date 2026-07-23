@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Servidor de Notificaciones",
     description="Backend asíncrono para gestión de notificaciones en tiempo real",
-    version="2.0.2",
+    version="2.1.0",
     lifespan=lifespan
 )
 
