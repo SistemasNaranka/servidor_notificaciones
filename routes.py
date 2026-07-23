@@ -402,7 +402,11 @@ async def enviar_notificacion(payload: NotificationRequest, request: Request, au
     # 2. Resolución de destinos
     target_ids, raw_dest, id_map = await resolve_destinations(payload.destinatarios, payload.excluir)
     if not target_ids:
-        return JSONResponse(status_code=400, content={"message": "Sin destinatarios válidos"})
+        dest_str = ", ".join(payload.destinatarios) if payload.destinatarios else "vacío"
+        return JSONResponse(
+            status_code=400, 
+            content={"message": f"No se encontró ningún usuario, tienda o grupo válido registrado con los destinatarios especificados: [{dest_str}]. Verifique los códigos en Directus."}
+        )
 
     # 3. Guardar log principal
     notif_id = await save_notification_log(

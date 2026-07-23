@@ -90,8 +90,10 @@ async def resolve_destinations(destinatarios: list, excluir: list = None) -> tup
 
     # Separar destinatarios por tipo para procesamiento en lote
     codigos_directos = []
+    usuarios_solo = []
     grupos_nombres = []
     areas_nombres = []
+    tienda_ids = []
 
     for d in destinos_raw:
         d_lower = d.lower()
@@ -101,14 +103,22 @@ async def resolve_destinations(destinatarios: list, excluir: list = None) -> tup
                 cid = str(c["id"])
                 client_ids.add(cid)
                 if c.get("code"): id_to_code[cid] = str(c["code"])
-        elif d.startswith("grupo:"):
-            grupos_nombres.append(d.replace("grupo:", "").strip())
-        elif d.startswith("area:"):
-            areas_nombres.append(d.replace("area:", "").strip())
+        elif d_lower.startswith("grupo:"):
+            grupos_nombres.append(d[6:].strip())
+        elif d_lower.startswith("area:"):
+            areas_nombres.append(d[5:].strip())
+        elif d_lower.startswith("tienda:"):
+            tienda_ids.append(d[7:].strip())
+        elif d_lower.startswith("store:"):
+            tienda_ids.append(d[6:].strip())
+        elif d_lower.startswith("usuario:"):
+            usuarios_solo.append(d[8:].strip())
+        elif d_lower.startswith("user:"):
+            usuarios_solo.append(d[5:].strip())
         else:
             codigos_directos.append(d)
 
-    # 1. Resolver Códigos Directos en batch
+    # 1. Resolver Códigos Directos generales
     if codigos_directos:
         res = await _directus_request("/items/core_notifier_clients", {
             "filter": json.dumps({"code": {"_in": codigos_directos}}),
@@ -118,6 +128,42 @@ async def resolve_destinations(destinatarios: list, excluir: list = None) -> tup
             cid = str(c["id"])
             client_ids.add(cid)
             name_part = f" ({c.get('name', '')})" if c.get('name') else ""
+            id_to_code[cid] = f"{c.get('code', '???')}{name_part}"
+
+    # 1b. Resolver Usuarios Normales (que NO son tienda / store_id es nulo)
+    if usuarios_solo:
+        res = await _directus_request("/items/core_notifier_clients", {
+            "filter": json.dumps({
+                "code": {"_in": usuarios_solo},
+                "store_id": {"_null": True}
+            }),
+            "fields": "id,code,name"
+        })
+        for c in res:
+            cid = str(c["id"])
+            client_ids.add(cid)
+            name_part = f" ({c.get('name', '')})" if c.get('name') else ""
+            id_to_code[cid] = f"{c.get('code', '???')}{name_part}"
+
+    # 1c. Resolver Tiendas estrictamente por store_id
+    if tienda_ids:
+        # Generar lista con cadenas y enteros para coincidir exactamente con el campo store_id en Directus
+        store_filter = []
+        for tid in tienda_ids:
+            store_filter.append(tid)
+            if tid.isdigit():
+                store_filter.append(int(tid))
+
+        res = await _directus_request("/items/core_notifier_clients", {
+            "filter": json.dumps({
+                "store_id": {"_in": store_filter}
+            }),
+            "fields": "id,code,name"
+        })
+        for c in res:
+            cid = str(c["id"])
+            client_ids.add(cid)
+            name_part = f" (Tienda {c.get('name', '')})" if c.get('name') else ""
             id_to_code[cid] = f"{c.get('code', '???')}{name_part}"
 
     # 2. Resolver Áreas en batch
